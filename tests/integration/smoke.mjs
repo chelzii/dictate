@@ -21,6 +21,7 @@ function stop(){stream?.getTracks().forEach(t=>t.stop());start.hidden=false;fini
 finish.onclick=()=>{
 const editor=document.querySelector('[data-composer-markdown]');
 if(window.renderMode==='early'){editor.textContent='今天的工作已经完成。';setTimeout(stop,500);}
+else if(window.renderMode==='noResult'){stop();}
 else if(window.renderMode==='late'){stop();setTimeout(()=>editor.textContent='今天的工作',20);setTimeout(()=>editor.textContent='今天的工作已经完成。',160);}
 else {stop();setTimeout(()=>editor.textContent='今天的工作已经完成。',200);}
 };cancel.onclick=stop;send.onclick=()=>sent++;transcribeSend.onclick=()=>sent++;
@@ -32,7 +33,7 @@ await new Promise(r=>server.listen(0,'127.0.0.1',r));
 const chrome=spawn('google-chrome',['--headless=new','--no-first-run','--no-default-browser-check','--disable-background-timer-throttling','--enable-unsafe-extension-debugging','--use-fake-device-for-media-stream','--use-fake-ui-for-media-stream','--remote-debugging-port=0','--user-data-dir='+profile,'about:blank'],{stdio:['ignore','ignore','pipe']});
 let stderr='';chrome.stderr.on('data',b=>stderr+=b);
 const pause=ms=>new Promise(r=>setTimeout(r,ms));const sockets=[];
-async function connect(url){const ws=new WebSocket(url);await new Promise((r,j)=>{ws.onopen=r;ws.onerror=j;});let id=0;const pending=new Map();const listeners=new Map();ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.id){const p=pending.get(m.id);if(p){pending.delete(m.id);m.error?p.reject(Error(JSON.stringify(m.error))):p.resolve(m.result);}}else for(const fn of listeners.get(m.method)||[])fn(m.params);};sockets.push(ws);return {call:(method,params={})=>new Promise((resolve,reject)=>{const n=++id;pending.set(n,{resolve,reject});ws.send(JSON.stringify({id:n,method,params}));}),on:(name,fn)=>listeners.set(name,[...(listeners.get(name)||[]),fn])};}
+async function connect(url){const ws=new WebSocket(url);await new Promise((r,j)=>{ws.onopen=r;ws.onerror=j;});let id=0;const pending=new Map();const listeners=new Map();ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.id){const p=pending.get(m.id);if(p){pending.delete(m.id);m.error?p.reject(Error(JSON.stringify(m.error))):p.resolve(m.result);}}else for(const fn of listeners.get(m.method)||[])fn(m.params,m.sessionId);};sockets.push(ws);return {call:(method,params={},sessionId)=>new Promise((resolve,reject)=>{const n=++id;pending.set(n,{resolve,reject});ws.send(JSON.stringify({id:n,method,params,...(sessionId?{sessionId}:{})}));}),on:(name,fn)=>listeners.set(name,[...(listeners.get(name)||[]),fn])};}
 async function evaluate(c,expression){const r=await c.call('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true});if(r.exceptionDetails)throw Error(JSON.stringify(r.exceptionDetails));return r.result.value;}
 try{
 let port;for(let n=0;n<120;n++){try{port=(await readFile(join(profile,'DevToolsActivePort'),'utf8')).split('\n')[0];break;}catch{}if(chrome.exitCode!==null)throw Error(stderr.slice(-1000));await pause(100);}assert(port,'Chrome startup');const endpoint='http://127.0.0.1:'+port;
@@ -167,6 +168,59 @@ const deniedResult=await evaluate(deniedWorker,`__testRun('toggle',{id:${targetI
 assert.equal(deniedResult.ok,false);assert.equal(await evaluate(backend.cdp,'recorded'),recorded);
 assert.equal(await evaluate(foreground.cdp,'mainTarget.value'),'主');
 console.log('PASS ungranted cross-origin iframe is refused without recording or parent insertion');
+
+// Supply the same mock to fresh backend pages created after cancelling a transcription.
+browser.on('Target.targetCreated',async({targetInfo})=>{
+  if(targetInfo.type!=='page' || [backend.id,foreground.id].includes(targetInfo.targetId) ||
+     (targetInfo.url && targetInfo.url!=='about:blank' && !targetInfo.url.startsWith('https://chatgpt.com/')))return;
+  const c=await connect('ws://127.0.0.1:'+port+'/devtools/page/'+targetInfo.targetId);
+  c.on('Fetch.requestPaused',p=>c.call('Fetch.fulfillRequest',{requestId:p.requestId,responseCode:200,responseHeaders:[{name:'Content-Type',value:'text/html; charset=utf-8'}],body:Buffer.from(mock).toString('base64')}).catch(()=>{}));
+  await c.call('Fetch.enable',{patterns:[{urlPattern:'https://chatgpt.com/*',resourceType:'Document'}]});
+  await c.call('Page.navigate',{url:'https://chatgpt.com/'});
+});
+await browser.call('Target.setDiscoverTargets',{discover:true});
+await foreground.cdp.call('Page.navigate',{url:'http://127.0.0.1:'+server.address().port+'/'});await pause(150);
+await evaluate(backend.cdp,"document.querySelector('[data-composer-markdown]').textContent=''");
+await prepareArea();assert.equal((await invoke('toggle')).ok,true);
+const finishingAfterCancel=invoke('toggle');await pause(50);await invoke('cancel');await finishingAfterCancel;await pause(300);
+assert.equal(await evaluate(foreground.cdp,'area.value'),'');
+assert.equal(await evaluate(worker,`chrome.tabs.get(${backendId}).then(()=>false,()=>true)`),true,'cancelled transcription page is retired');
+assert.equal((await state()).backendTabId,undefined);
+await prepareArea();const freshStart=await invoke('toggle');assert.equal(freshStart.ok,true,'next F9 creates an uncontaminated backend: '+JSON.stringify(freshStart));
+const freshBackend=(await state()).backendTabId;assert.notEqual(freshBackend,backendId);
+await invoke('toggle');assert.equal(await evaluate(foreground.cdp,'area.value'),'今天的工作已经完成。');
+console.log('PASS F8 during transcription retires late results; next recording completes');
+// Recording cancellation keeps the warm page, and never inserts a result.
+await prepareArea();assert.equal((await invoke('toggle')).ok,true);await invoke('cancel');
+assert.equal((await state()).backendTabId,freshBackend);assert.equal(await evaluate(foreground.cdp,'area.value'),'');
+console.log('PASS F8 while recording keeps the reusable backend');
+// A trusted manual edit on the backend must survive cancellation; only the binding is dropped.
+await evaluate(worker,`chrome.scripting.executeScript({target:{tabId:${freshBackend}},func:()=>document.title='cancel-protected-fixture'})`);
+const freshInfo=(await browser.call('Target.getTargets')).targetInfos.find(t=>t.type==='page'&&t.title==='cancel-protected-fixture');
+const protectedBackend=await connect('ws://127.0.0.1:'+port+'/devtools/page/'+freshInfo.targetId);
+await protectedBackend.call('Emulation.setFocusEmulationEnabled',{enabled:true});
+await evaluate(protectedBackend,"window.renderMode='noResult'");
+await prepareArea();assert.equal((await invoke('toggle')).ok,true);
+const protectedFinishing=invoke('toggle');await pause(50);
+await protectedBackend.call('Page.bringToFront');await evaluate(protectedBackend,"document.querySelector('[data-composer-markdown]').focus()");
+await protectedBackend.call('Input.insertText',{text:'手动草稿'});
+const editCheck=await evaluate(worker,`chrome.scripting.executeScript({target:{tabId:${freshBackend}},func:()=>__backgroundDictationPage.state({})})`);
+assert(editCheck[0].result.userEdits>0,'native backend edit must be observed: '+JSON.stringify(editCheck));
+await invoke('cancel');await protectedFinishing;
+assert.equal(await evaluate(worker,`chrome.tabs.get(${freshBackend}).then(()=>true,()=>false)`),true,'manually edited page preserved');
+assert.equal(await evaluate(protectedBackend,"document.querySelector('[data-composer-markdown]').textContent"),'手动草稿');
+assert.equal((await state()).backendTabId,undefined);
+await prepareArea();assert.equal((await invoke('toggle')).ok,true,'preserved manual draft does not block the new backend');await invoke('cancel');
+console.log('PASS manual backend drafts survive cancellation without blocking subsequent dictation');
+const orphanedId=(await state()).backendTabId;
+await evaluate(worker,`chrome.scripting.executeScript({target:{tabId:${orphanedId}},func:()=>document.querySelector('[data-composer-markdown]').textContent='旧草稿'})`);
+await invoke('cancel');assert.equal((await state()).backendTabId,undefined);
+assert.equal(await evaluate(worker,`chrome.tabs.get(${orphanedId}).then(()=>true,()=>false)`),true);
+const orphanedText=await evaluate(worker,`chrome.scripting.executeScript({target:{tabId:${orphanedId}},func:()=>document.querySelector('[data-composer-markdown]').textContent})`);
+assert.equal(orphanedText[0].result,'旧草稿');
+await prepareArea();assert.equal((await invoke('toggle')).ok,true);await invoke('cancel');
+console.log('PASS idle F8 isolates legacy drafts without erasing them; next recording starts');
+
 
 console.log(JSON.stringify({chrome:version.Browser,scope:'Real unpacked extension; mock ChatGPT UI, fake microphone, test-only localhost host permission. Real ChatGPT and shortcut registration require user trial.'}));
 }catch(e){console.error(e);process.exitCode=1;}finally{for(const s of sockets)s.close();chrome.kill('SIGTERM');server.close();await pause(400);await rm(temp,{recursive:true,force:true}).catch(()=>{});}

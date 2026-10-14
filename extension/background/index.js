@@ -109,6 +109,20 @@ async function cleanup(s){
     await Promise.all([target(s,'forget',s.id).catch(()=>{}),chrome.alarms.clear(WATCHDOG),chrome.storage.session.remove(SESSION_KEY)]);
   }finally{cleaning=false;}
 }
+// Closing the cancelled transcription document also discards responses that arrive later.
+// Clearing its current text once is insufficient: the server may still write another result.
+async function retireCancelledBackend(s){
+  const {backendTabId}=await chrome.storage.session.get('backendTabId');
+  if(backendTabId!==s.backendTabId)return;
+  await chrome.storage.session.remove(['backendTabId','pendingDraftCleanup']);
+  const tab=await chrome.tabs.get(s.backendTabId).catch(()=>null);
+  if(!tab || !/^https:\/\/chatgpt\.com(?:\/|$)/.test(tab.url || ''))return;
+  const st=await page(s.backendTabId,'state',(await settings()).selectors).catch(()=>null);
+  // Preserve a navigated document or a manual edit. It is detached, so it cannot block F9.
+  if(st?.documentId!==s.backendDocumentId || st.userEdits!==s.backendUserEdits)return;
+  await chrome.tabs.remove(s.backendTabId).catch(()=>{});
+  ownedBackendTabs.delete(s.backendTabId);
+}
 async function abort(s,message){
   const cancelled=message==='听写已取消。';
   if(s){
@@ -124,6 +138,7 @@ async function abort(s,message){
         message+=' 无法确认录音已停止，请打开专用 ChatGPT 页手动停止。';
       }
     }
+    if(cancelled && s.phase==='transcribing')await retireCancelledBackend(s);
     await toast(s,message,true);
     await cleanup(s);
     reportTiming(s,cancelled?'cancelled':'error',cancelled?undefined:message);
@@ -213,6 +228,7 @@ async function start(tab,desktopTarget,keyAt){
   if(!initial.start || initial.finish || initial.cancel)throw Error('听写页不是空闲状态，或按钮未识别。请查看面板诊断。');
   if(cancelRequested)throw Error('听写已取消。');
   await toast(s,'正在启动 ChatGPT 后台听写…');
+  s.backendDocumentId=initial.documentId;s.backendUserEdits=initial.userEdits;
   s.clickedStart=true;await save(s);
   await click(backendTabId,'start',config.selectors);
   mark(s,'startClick');
@@ -270,7 +286,8 @@ async function finish(s,keyAt,reason){
   }
   mark(s,'stable');
   const transcript=st.text;
-  if(cancelRequested || closeRequested)throw Error('听写已关闭。');
+  if(cancelRequested)throw Error('听写已取消。');
+  if(closeRequested)throw Error('听写已关闭。');
   await chrome.storage.session.set({lastResult:transcript,lastResultAt:Date.now()});
   let status='文字已填入原输入框。';let failed=false;
   try{
@@ -335,7 +352,16 @@ async function run(action,tab,desktopTarget,keyAt=Date.now(),reason){
   try{
     const s=await session();
     if(action==='cancel'){
-      if(s)await abort(s,'听写已取消。');else await publishStatus('cancelled','当前没有进行中的听写。');
+      if(s)await abort(s,'听写已取消。');
+      else {
+        const {backendTabId}=await chrome.storage.session.get('backendTabId');
+        const st=backendTabId?await page(backendTabId,'state',(await settings()).selectors).catch(()=>null):null;
+        if(st?.text?.trim() && !st.finish && !st.cancel){
+          // Recover an old/orphaned draft without claiming it is safe to erase.
+          await chrome.storage.session.remove(['backendTabId','pendingDraftCleanup']);
+          await publishStatus('cancelled','后台草稿已隔离，下次听写自动打开新页；原文字保留。');
+        }else await publishStatus('cancelled','当前没有进行中的听写。');
+      }
       return {ok:true};
     }
     if(s?.phase==='recording')await finish(s,keyAt,reason);
@@ -344,7 +370,8 @@ async function run(action,tab,desktopTarget,keyAt=Date.now(),reason){
     return {ok:true};
   }catch(e){
     const saved=await session();
-    await abort(saved && activeSession?.id===saved.id?activeSession:saved,e.message);return {ok:false,error:e.message};
+    const message=cancelRequested && !closeRequested?'听写已取消。':e.message;
+    await abort(saved && activeSession?.id===saved.id?activeSession:saved,message);return {ok:false,error:message};
   }
   finally{busy=false;cancelRequested=false;activeSession=undefined;}
 }

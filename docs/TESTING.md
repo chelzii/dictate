@@ -49,3 +49,9 @@ python3 tests/integration/install-lifecycle.py --dependency-venv /path/to/depend
 `python3 tests/manual/real/run-page-adapter.py` 另需已连接的 Kimi WebBridge（本机 10086）、已登录 ChatGPT 和上述语音依赖。它在自己创建的页面中验证真实转写、清理和取消，结束关闭自己的页面；不发送聊天消息。DOM 探测的耗时不等同于端到端桌面插入耗时。
 
 兼容性与等待优化的分析和覆盖范围见 [PERFORMANCE.md](PERFORMANCE.md)。无头回归使用焦点模拟和关闭背景定时器节流，以稳定测试浏览器编辑和 frame 焦点规则；真实页面验收使用普通 Chrome。
+
+## 转写中取消
+
+`python3 tests/manual/real/run-cancel-transcribing.py` 使用真实 F9/F8、已知语音和 GTK 目标输入框。检查转写中 F8、不填入取消结果、后续 F9 能转写。旧代码下实际复现了第二次开始被未清空草稿拦截；该脚本需要已重新加载修复后的正式扩展才能验收修复。
+
+隔离回归另外覆盖迟到结果、取消后的新后台页、录音取消保留暖页、手动草稿保护及空闲 F8 隔离旧草稿。

@@ -27,7 +27,7 @@ python3 scripts/dictate.py doctor
    ```
 
 4. 重新加载扩展。从面板打开专用 ChatGPT 页面，登录并手动听写一次以授权麦克风，清空草稿并绑定。
-5. 点击目标输入框，F9 开始与结束，F8 取消。
+5. 点击目标输入框，F9 开始与结束。听写进行中 F8 取消；自动插入失败时，重新点击目标输入框后按 F8 重试。
 
 ```bash
 ~/.local/bin/dictate doctor

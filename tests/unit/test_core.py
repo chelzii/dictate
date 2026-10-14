@@ -1,3 +1,4 @@
+import collections
 import contextlib
 import importlib.util
 import io
@@ -6,10 +7,11 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from dictate.protocol import Lines
 from dictate.hotkeys import same_target
+from dictate.daemon import Daemon
 from dictate import install, doctor
 
 
@@ -33,6 +35,102 @@ class FocusTests(unittest.TestCase):
     def test_toolkit_top_level_focus_proxy_is_accepted(self):
         self.assertTrue(same_target({'window': 1, 'focus': 1}, {'window': 1, 'focus': 4}))
         self.assertTrue(same_target({'window': 1, 'focus': 4}, {'window': 1, 'focus': 1}))
+
+
+class PendingInsertTests(unittest.TestCase):
+    def daemon(self):
+        daemon = Daemon.__new__(Daemon)
+        daemon.pending_insert = '保留的转写'
+        daemon.phase = 'error'
+        daemon.history = collections.deque([{'text': '保留的转写', 'at': '12:00'}])
+        daemon.paste = Mock()
+        daemon.record = Mock()
+        daemon.show = Mock()
+        daemon.send_bridge = Mock()
+        return daemon
+
+    def test_successful_retry_consumes_pending_marker_but_keeps_history(self):
+        daemon = self.daemon()
+        target = {'window': 1, 'focus': 2}
+
+        self.assertTrue(daemon.retry_pending_insert(target))
+
+        daemon.paste.assert_called_once_with('保留的转写', target)
+        self.assertIsNone(daemon.pending_insert)
+        self.assertEqual(daemon.history[0]['text'], '保留的转写')
+        daemon.send_bridge.assert_called_once_with({
+            'type': 'retry-insert-result', 'ok': True, 'status': '文字已重新插入当前输入框。'})
+
+    def test_failed_retry_remains_pending(self):
+        daemon = self.daemon()
+        daemon.paste.side_effect = ValueError('输入焦点已改变')
+
+        self.assertTrue(daemon.retry_pending_insert({'window': 1, 'focus': 2}))
+
+        self.assertEqual(daemon.pending_insert, '保留的转写')
+        daemon.show.assert_called_once_with(
+            'error', '输入焦点已改变', retryInsert=True, fix='copy')
+
+    def test_failed_automatic_insert_becomes_pending(self):
+        daemon = self.daemon()
+        daemon.pending_insert = None
+        daemon.history.clear()
+        daemon.push_menu = Mock()
+        daemon.paste.side_effect = ValueError('输入焦点已改变')
+
+        daemon.on_bridge({'type': 'insert', 'requestId': '7', 'text': '新的转写',
+                          'target': {'window': 1, 'focus': 2}})
+
+        self.assertEqual(daemon.pending_insert, '新的转写')
+        self.assertEqual(daemon.history[0]['text'], '新的转写')
+        daemon.send_bridge.assert_called_once_with({
+            'type': 'insert-result', 'requestId': '7', 'ok': False, 'error': '输入焦点已改变'})
+
+    def test_f8_retries_pending_result_instead_of_sending_cancel(self):
+        daemon = self.daemon()
+        target = {'window': 1, 'focus': 2}
+        daemon.settings = {'sleeping': False}
+        daemon.closing = False
+        daemon.pending = None
+        daemon.extension_ready = True
+        daemon.focus = Mock(return_value=target)
+        daemon.retry_pending_insert = Mock(return_value=True)
+        daemon.command = Mock()
+
+        daemon.on_key('cancel', key_at=123)
+
+        daemon.retry_pending_insert.assert_called_once_with(target)
+        daemon.command.assert_not_called()
+
+    def test_f8_still_cancels_during_an_active_task(self):
+        daemon = self.daemon()
+        daemon.phase = 'recording'
+        daemon.settings = {'sleeping': False}
+        daemon.closing = False
+        daemon.pending = None
+        daemon.extension_ready = True
+        daemon.focus = Mock(return_value={'window': 1, 'focus': 2})
+        daemon.retry_pending_insert = Mock(return_value=True)
+        daemon.command = Mock()
+
+        daemon.on_key('cancel', key_at=123)
+
+        daemon.retry_pending_insert.assert_not_called()
+        daemon.command.assert_called_once_with(
+            'cancel', target={'window': 1, 'focus': 2}, keyAt=123000)
+
+    def test_starting_a_new_dictation_discards_pending_retry(self):
+        daemon = self.daemon()
+        daemon.settings = {'sleeping': False}
+        daemon.closing = False
+        daemon.recording = None
+        daemon.sound = Mock()
+        daemon.start_recording = Mock()
+        daemon.stop_recording = Mock()
+
+        daemon.on_status({'phase': 'starting', 'status': '正在启动'})
+
+        self.assertIsNone(daemon.pending_insert)
 
 
 class InstallerTests(unittest.TestCase):

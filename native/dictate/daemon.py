@@ -87,6 +87,7 @@ class Daemon:
         self.serial = 0
         self.restore = []            # clipboard restores: (deadline, our_text, previous)
         self.history = collections.deque(maxlen=HISTORY_SIZE)
+        self.pending_insert = None   # latest transcript whose desktop paste failed
         self.recording = None        # per-recording meter/limit bookkeeping
         self.meter = Meter()
         self.panel = Panel()
@@ -198,6 +199,9 @@ class Daemon:
             if action == 'cancel':
                 return
             self.set_sleep(False)
+        if action == 'cancel' and self.pending_insert is not None and self.phase not in ACTIVE_PHASES:
+            self.retry_pending_insert(target)
+            return
         if action == 'cancel' and self.pending:
             self.pending = None
             self.show('cancelled', '已取消启动。')
@@ -207,6 +211,8 @@ class Daemon:
                 self.connect_chrome({'action': 'toggle', 'target': target, 'keyAt': int(key_at * 1000)})
             return
         if action == 'toggle' and self.phase in ['idle', 'done', 'cancelled', 'error', 'sleeping']:
+            # A new dictation supersedes an older result that was waiting to be reinserted.
+            self.pending_insert = None
             self.show('starting', '正在准备后台 ChatGPT 听写页。')
         elif action == 'toggle' and self.phase == 'recording':
             self.show('transcribing', 'F8 可以取消等待。')
@@ -243,6 +249,28 @@ class Daemon:
         self.restore.append((time.monotonic() + 1.5, text.encode(), previous))
         self.record(lastInsertLength=len(text), lastInsertSHA256=hashlib.sha256(text.encode()).hexdigest(),
                     lastInsertTarget=target, lastInsertAt=time.time())
+
+    def retry_pending_insert(self, target):
+        """Paste the retained transcript at the current focus; F8 consumes it on success."""
+        text = self.pending_insert
+        if text is None:
+            return False
+        try:
+            self.paste(text, target)
+        except Exception as error:
+            message = str(error)
+            self.phase = 'error'
+            self.record(phase='error', status=message, pendingInsert=True)
+            self.show('error', message, retryInsert=True, fix='copy')
+            self.send_bridge({'type': 'retry-insert-result', 'ok': False, 'error': message})
+            return True
+        self.pending_insert = None
+        self.phase = 'done'
+        status = '文字已重新插入当前输入框。'
+        self.record(phase='done', status=status, pendingInsert=False)
+        self.show('done', status)
+        self.send_bridge({'type': 'retry-insert-result', 'ok': True, 'status': status})
+        return True
 
     def restore_clipboard(self):
         now = time.monotonic()
@@ -350,8 +378,11 @@ class Daemon:
                 self.push_menu()
             try:
                 self.paste(text, target)
+                self.pending_insert = None
                 answer = {'ok': True}
             except Exception as e:
+                if isinstance(text, str) and text:
+                    self.pending_insert = text
                 answer = {'ok': False, 'error': str(e)}
             self.send_bridge({'type': 'insert-result', 'requestId': message.get('requestId'), **answer})
         elif kind == 'timing' and isinstance(message.get('entry'), dict):
@@ -364,8 +395,11 @@ class Daemon:
             return
         if self.closing or self.sleeping:
             return
+        if phase == 'starting':
+            self.pending_insert = None
         previous, self.phase = self.phase, phase
-        self.record(phase=phase, status=message.get('status'), lastCommandOk=message.get('ok'))
+        self.record(phase=phase, status=message.get('status'), lastCommandOk=message.get('ok'),
+                    pendingInsert=self.pending_insert is not None)
         if phase == 'recording' and previous != 'recording':
             self.start_recording(message.get('limitMs') or 480000)
             self.sound('start')
@@ -375,7 +409,9 @@ class Daemon:
             self.sound('done')
         elif phase == 'error':
             self.sound('error')
-        extra = {k: message[k] for k in ['detail', 'fix', 'limitMs'] if message.get(k)}
+        extra = {k: message[k] for k in ['detail', 'fix', 'limitMs', 'retryInsert'] if message.get(k)}
+        if phase == 'error' and self.pending_insert is not None:
+            extra['retryInsert'] = True
         self.show(phase, message.get('status', ''), **extra)
 
     def log_timing(self, entry):

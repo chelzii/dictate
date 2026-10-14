@@ -484,6 +484,13 @@ function connectNative(){
         const pending=nativePending.get(message.requestId);if(!pending)return;
         clearTimeout(pending.timeout);nativePending.delete(message.requestId);pending.resolve(message);return;
       }
+      if(message.type==='retry-insert-result'){
+        const ok=!!message.ok;
+        const status=ok?(message.status || '文字已重新插入当前输入框。'):(message.error || '重新插入失败，请点击目标输入框后再按 F8。');
+        Promise.all([publishStatus(ok?'done':'error',status,ok,{fix:ok?undefined:'copy',retryInsert:ok?undefined:true}),
+          badge(ok?'✓':'COPY',ok?'#176b55':'#966000')]).catch(()=>{});
+        return;
+      }
       if(message.type!=='desktop-command' || !['toggle','cancel','sleep','open-backend'].includes(message.action))return;
       (async()=>{
         const result=message.action==='sleep'?await sleepDictation():message.action==='open-backend'?await openBackend():await resumeAndRun(message.action,null,message.target,message.keyAt);

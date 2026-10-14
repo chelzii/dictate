@@ -428,7 +428,9 @@ class Capsule:
         if recording and not self.tick_id:
             self.tick_id = GLib.timeout_add(250, self.tick)
         self.fix = message.get('fix') if phase == 'error' else None
-        if self.fix in FIX_HINTS:
+        if phase == 'error' and message.get('retryInsert'):
+            self.hint.set_markup('<b>F8</b> 重新插入   点击复制')
+        elif self.fix in FIX_HINTS:
             self.hint.set_text(FIX_HINTS[self.fix])
         elif changed or not recording:
             self.hint.set_markup('   '.join(f'<b>{k}</b> {GLib.markup_escape_text(t)}' for k, t in keys))

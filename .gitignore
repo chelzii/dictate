@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+node_modules/
+tests/.deps/
+.env
+.env.*
+*.zip
+*.wav
+*.mp3
+# Local desktop snapshots, transcripts and historical machine-specific tests.
+tests/real/*.json
+tests/real/*.png
+tests/real/legacy/

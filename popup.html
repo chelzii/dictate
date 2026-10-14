@@ -1,0 +1,19 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>dictate</title>
+<link rel="stylesheet" href="style.css"><body class="popup">
+<h1>dictate</h1>
+<p>在输入框中按 <kbd>F9</kbd> 开始 / 结束，按 <kbd>F8</kbd> 取消。</p>
+<div id="status" class="status">正在读取状态…</div>
+<p id="timing" class="hint"></p>
+<div class="row"><button id="prepare">打开专用听写页</button><button id="bind" class="secondary">绑定当前 ChatGPT 页</button></div>
+<p class="hint">首次登录后，手动用一次听写并允许麦克风，再清空草稿。初始化完成后，日常听写无需切换页面。重启 Chrome 后会在下次 F9 自动恢复后台页。</p>
+<button id="cancel" class="secondary">取消 / 重置本次听写</button>
+<h2>最近转写</h2><textarea id="result" readonly placeholder="转写文字会保留在这里，插入失败也可以复制。"></textarea>
+<button id="copy">复制文字</button>
+<details><summary>诊断与按钮适配</summary><p class="hint">如果网页按钮改名，可查看诊断。选择器必须精确指向听写按钮，尤其不要选择聊天发送按钮。</p>
+<button id="diagnose" class="secondary">读取后台页按钮</button><pre id="diagnostic"></pre>
+<label>开始按钮 CSS 选择器<input id="startSelector" placeholder="留空使用自动识别"></label>
+<label>结束 / 确认听写按钮<input id="finishSelector" placeholder="留空使用自动识别"></label>
+<label>取消听写按钮<input id="cancelSelector" placeholder="留空使用自动识别"></label>
+<button id="saveSelectors" class="secondary">保存选择器</button></details>
+<p class="hint">本机服务通过粘贴填入网页和桌面软件的常规输入框；转写期间请保持原输入焦点。转写使用你的 ChatGPT 网页听写权限。</p>
+<script src="popup.js"></script></body></html>

@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "dictate — ChatGPT 后台听写",
+  "version": "0.2.2",
+  "description": "在网页和桌面软件输入框中使用 F9 听写、F8 取消。",
+  "minimum_chrome_version": "118",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "alarms",
+    "nativeMessaging"
+  ],
+  "host_permissions": [
+    "https://chatgpt.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "dictate — ChatGPT 后台听写"
+  },
+  "commands": {
+    "toggle-dictation": {
+      "description": "开始 / 结束后台听写"
+    },
+    "cancel-dictation": {
+      "description": "取消本次听写"
+    }
+  }
+}

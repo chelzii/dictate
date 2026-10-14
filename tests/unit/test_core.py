@@ -216,5 +216,22 @@ class DiagnosticsTests(unittest.TestCase):
             self.assertNotIn('private', json.dumps(result))
 
 
+class OptionalAudioTests(unittest.TestCase):
+    def test_missing_libpulse_keeps_the_optional_meter_disabled(self):
+        import builtins
+        original = builtins.__import__
+        def without_libpulse(name, *args, **kwargs):
+            if name == 'pulsectl':
+                raise OSError('libpulse.so.0: cannot open shared object file')
+            return original(name, *args, **kwargs)
+        source = Path(__file__).resolve().parents[2] / 'native/dictate/audio.py'
+        spec = importlib.util.spec_from_file_location('dictate_optional_audio_test', source)
+        module = importlib.util.module_from_spec(spec)
+        with patch('builtins.__import__', side_effect=without_libpulse):
+            spec.loader.exec_module(module)
+        self.assertIsNone(module.pulsectl)
+        self.assertIsNone(module.Meter()._chrome_source())
+
+
 if __name__ == '__main__':
     unittest.main()

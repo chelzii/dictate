@@ -5,7 +5,7 @@ import subprocess
 
 try:
     import pulsectl
-except ImportError:
+except (ImportError, OSError):  # pulsectl may exist while the optional libpulse is absent.
     pulsectl = None
 
 class Meter:

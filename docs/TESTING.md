@@ -43,3 +43,9 @@ python3 tests/integration/install-lifecycle.py --dependency-venv /path/to/depend
 ```
 
 需 Xephyr 和包含运行依赖的虚拟环境。使用临时 HOME、独立 socket 和嵌套 X 会话，真实检查首次安装、重复安装、更新、启动失败回退和卸载。只复用依赖文件，不使用用户的设置或服务；这不等同于从零安装系统依赖的全新 Ubuntu 虚拟机测试。
+
+## 真实页面适配器
+
+`python3 tests/manual/real/run-page-adapter.py` 另需已连接的 Kimi WebBridge（本机 10086）、已登录 ChatGPT 和上述语音依赖。它在自己创建的页面中验证真实转写、清理和取消，结束关闭自己的页面；不发送聊天消息。DOM 探测的耗时不等同于端到端桌面插入耗时。
+
+兼容性与等待优化的分析和覆盖范围见 [PERFORMANCE.md](PERFORMANCE.md)。无头回归使用焦点模拟和关闭背景定时器节流，以稳定测试浏览器编辑和 frame 焦点规则；真实页面验收使用普通 Chrome。

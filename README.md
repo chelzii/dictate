@@ -49,7 +49,7 @@ python3 scripts/package.py
 
 快速测试使用临时无头 Chrome、模拟 ChatGPT 页面和虚拟录音设备，不能替代真实在线验收。既有真实测试的范围与结果见 [验收记录](VALIDATION.md)；重跑方法见 [测试说明](docs/TESTING.md)。打包输出为 `dist/dictate-X.Y.Z.zip`，包含源码和使用文档，不包含测试数据。
 
-[架构与目录](docs/ARCHITECTURE.md) · [安装说明](docs/INSTALL.md) · [排障说明](docs/TROUBLESHOOTING.md) · [测试说明](docs/TESTING.md)
+[性能与兼容性分析](docs/PERFORMANCE.md) · [架构与目录](docs/ARCHITECTURE.md) · [安装说明](docs/INSTALL.md) · [排障说明](docs/TROUBLESHOOTING.md) · [测试说明](docs/TESTING.md)
 
 ## 开源与维护
 

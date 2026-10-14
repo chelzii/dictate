@@ -4,6 +4,9 @@
   const BUILD=globalThis.__backgroundDictationBuild;
   if (BUILD && globalThis.__backgroundDictationPage?.build===BUILD) return;
   globalThis.__backgroundDictationPage?.dispose?.();
+  let userEdits=0,clearing=false;
+  const onUserEdit=event=>{if(event.isTrusted && !clearing && editor()?.contains(event.target))userEdits++;};
+  document.addEventListener('input',onUserEdit,true);
   const visible = el => !!el && !el.disabled && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
   function buttons() { return [...document.querySelectorAll('button,[role="button"]')].filter(visible); }
   function label(el) { return [el.getAttribute('aria-label'),el.getAttribute('title'),el.getAttribute('data-testid'),el.textContent].filter(Boolean).join(' ').trim(); }
@@ -61,7 +64,7 @@
   }
   function state(selectors) {
     const items=scan();
-    return {text:text(),start:!!find('start',selectors,items),finish:!!find('finish',selectors,items),cancel:!!find('cancel',selectors,items),visibility:document.visibilityState,focus:document.hasFocus()};
+    return {text:text(),start:!!find('start',selectors,items),finish:!!find('finish',selectors,items),cancel:!!find('cancel',selectors,items),visibility:document.visibilityState,focus:document.hasFocus(),userEdits};
   }
   const signature = st => JSON.stringify([st.text,st.start,st.finish,st.cancel]);
 
@@ -97,22 +100,42 @@
     });
   }
   function inspect() {
-    return {url:location.href,visibility:document.visibilityState,focus:document.hasFocus(),editorFound:!!editor(),buttons:buttons().map(el=>({label:label(el),testId:el.getAttribute('data-testid')}))};
+    return {url:location.href,visibility:document.visibilityState,focus:document.hasFocus(),userEdits,editorFound:!!editor(),buttons:buttons().map(el=>({label:label(el),testId:el.getAttribute('data-testid')}))};
   }
   function clear(expected) {
     const el=editor();
     if (!el || text()!==expected) return false;
-    el.focus();
-    if ('value' in el) {
-      const proto=el.matches('textarea')?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;
-      Object.getOwnPropertyDescriptor(proto,'value').set.call(el,'');
-      el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'deleteContentBackward'}));
-    } else {
-      const sel=window.getSelection(); const range=document.createRange();range.selectNodeContents(el);sel.removeAllRanges();sel.addRange(range);
-      document.execCommand('delete');
-    }
-    return text()?.trim()==='';
+    if (!expected.trim()) return true;
+    clearing=true;
+    try {
+      el.focus();
+      if ('value' in el) {
+        const proto=el.matches('textarea')?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;
+        Object.getOwnPropertyDescriptor(proto,'value').set.call(el,'');
+        el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'deleteContentBackward'}));
+      } else {
+        const selectAll=()=>{
+          const sel=window.getSelection(),range=document.createRange();
+          range.selectNodeContents(el);sel.removeAllRanges();sel.addRange(range);
+        };
+        selectAll();
+        try { document.execCommand('delete'); } catch {}
+        if (text()?.trim()==='') return true;
+        // A user/application edit during deletion is not our transcript to erase.
+        if (text()!==expected) return false;
+        const allowed=el.dispatchEvent(new InputEvent('beforeinput',{bubbles:true,cancelable:true,inputType:'deleteContentBackward'}));
+        if (text()?.trim()==='') return true;
+        if (!allowed || text()!==expected) return false;
+        selectAll();
+        try { document.execCommand('delete'); } catch {}
+        // Never directly replace ProseMirror DOM: the editor model owns its contents.
+      }
+      return text()?.trim()==='';
+    } finally { clearing=false; }
   }
-  function dispose() { if(waiter)settle({disposed:true}); }
+  function dispose() {
+    if(waiter)settle({disposed:true});
+    document.removeEventListener('input',onUserEdit,true);
+  }
   globalThis.__backgroundDictationPage={build:BUILD,point,click,state,waitChange,inspect,clear,dispose};
 })();

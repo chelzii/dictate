@@ -4,8 +4,9 @@ const SESSION_KEY='dictationSession';
 const WATCHDOG='dictation-watchdog';
 // A fresh id per service-worker lifetime; the page script re-injects itself when it differs.
 const BUILD=crypto.randomUUID();
-// Quiet window after the transcript appears, guarding against a trailing editor update.
+// Keep 250 ms of text stability, counting time already observed before the idle button.
 const STABLE_MS=250;
+const READY_STABLE_MS=80;
 // An idle dictation button with an empty editor for this long means nothing was recognised.
 const EMPTY_MS=1500;
 // Recordings end automatically at this length and are transcribed, never discarded.
@@ -49,6 +50,7 @@ async function page(tabId,method,...args){
     // Inject only when missing or outdated, instead of on every call.
     if(r?.stale && !attempt){await injectPage(tabId);continue;}
     if(!r?.ok)throw Error(r?.error || (r?.stale?'听写页面脚本未就绪。':'无法读取 ChatGPT 页面。'));
+    if(['state','waitChange'].includes(method) && r.value && !r.value.disposed)r.value.documentId=result[0].documentId;
     return r.value;
   }
 }
@@ -173,9 +175,13 @@ async function start(tab,desktopTarget,keyAt){
   if(backend.discarded || backend.frozen)throw Error('听写页已休眠，请手动打开一次恢复后重试。');
   const s={id:crypto.randomUUID(),backendTabId,phase:'starting',startedAt:Date.now(),t};
   if(desktopTarget){s.sink='desktop';s.desktopTarget=desktopTarget;}else{
-    const injected=await chrome.scripting.executeScript({target:{tabId:tab.id},files:[ASSET_ROOT+'content/target.js']});
-    s.targetTabId=tab.id;s.targetDocumentId=injected[0].documentId;
-    if(!s.targetDocumentId)throw Error('无法取得目标文档标识。');
+    const injected=await chrome.scripting.executeScript({target:{tabId:tab.id,allFrames:true},files:[ASSET_ROOT+'content/target.js']});
+    const documents=injected.map(r=>r.documentId).filter(Boolean);
+    if(!documents.length)throw Error('无法取得目标文档标识。');
+    const candidates=await chrome.scripting.executeScript({target:{tabId:tab.id,documentIds:documents},func:()=>!!globalThis.__backgroundDictationTarget?.focused()});
+    const focused=candidates.filter(r=>r.result);
+    if(focused.length!==1)throw Error('无法访问当前输入文档；跨域 iframe 需要相应站点权限，可使用本机 F9 粘贴。');
+    s.targetTabId=tab.id;s.targetDocumentId=focused[0].documentId;
   }
   await save(s);activeSession=s;
   // Independent setup steps run concurrently. allSettled keeps every write finished
@@ -188,9 +194,22 @@ async function start(tab,desktopTarget,keyAt){
     chrome.tabs.update(backendTabId,{autoDiscardable:false})
   ]);
   const failed=steps.find(r=>r.status==='rejected');if(failed)throw failed.reason;
-  const initial=steps[0].value;
+  let initial=steps[0].value;
   if(initial.text===null)throw Error('专用 ChatGPT 页没有输入编辑器，请确认已登录并进入普通聊天。');
-  if(initial.text.trim())throw Error('专用听写页有未清空的草稿，请处理后再试；工具不会覆盖它。');
+  if(initial.text.trim()){
+    const {pendingDraftCleanup:pending}=await chrome.storage.session.get('pendingDraftCleanup');
+    // Matching lastResult alone does not establish ownership of a user's draft.
+    if(pending && pending.build===BUILD && pending.backendTabId===backendTabId &&
+       pending.documentId===initial.documentId && pending.userEdits===initial.userEdits &&
+       pending.text===initial.text && Date.now()-pending.at<10*60*1000 &&
+       initial.start && !initial.finish && !initial.cancel){
+      if(await page(backendTabId,'clear',pending.text)){
+        await chrome.storage.session.remove('pendingDraftCleanup');
+        initial=await page(backendTabId,'state',config.selectors);
+      }
+    }
+    if(initial.text.trim())throw Error('专用听写页有未清空的草稿，请处理后再试；工具不会覆盖它。');
+  }
   if(!initial.start || initial.finish || initial.cancel)throw Error('听写页不是空闲状态，或按钮未识别。请查看面板诊断。');
   if(cancelRequested)throw Error('听写已取消。');
   await toast(s,'正在启动 ChatGPT 后台听写…');
@@ -226,9 +245,10 @@ async function finish(s,keyAt,reason){
   const trace=s.t.trace=[];let last='';
   // While transcribing, ChatGPT hides the dictation button. If it comes back with an empty
   // editor, nothing was recognised: report that instead of waiting for the full timeout.
-  let emptySince=0;
+  let emptySince=0,lastText,lastTextChangedAt=Date.now();
   const nothing=st=>st.start && !st.finish && !st.cancel && !(st.text || '').trim();
   const traced=st=>{
+    if(st.text!==lastText){lastText=st.text;lastTextChangedAt=Date.now();}
     const sig=signature(st);if(sig!==last && trace.length<12){last=sig;trace.push([Date.now()-s.t.finishClick,+st.start,+st.finish,+st.cancel,(st.text || '').length]);}
     emptySince=nothing(st)?emptySince || Date.now():0;
     return ready(st) || (emptySince && Date.now()-emptySince>=EMPTY_MS);
@@ -236,9 +256,17 @@ async function finish(s,keyAt,reason){
   let st=await waitFor(s.backendTabId,selectors,traced,90000,timeout);
   if(!ready(st))throw Error('没有识别到语音，请靠近麦克风再说一次。');
   mark(s,'text');
-  for(let next;(next=await nextState(s.backendTabId,selectors,st,STABLE_MS));){
+  let readySince=Date.now();
+  for(;;){
     if(cancelRequested)throw Error('听写已取消。');
-    st=ready(next)?next:await waitFor(s.backendTabId,selectors,ready,deadline-Date.now(),timeout,{initial:next});
+    if(Date.now()>=deadline)throw Error(timeout);
+    const waitMs=Math.max(READY_STABLE_MS-(Date.now()-readySince),STABLE_MS-(Date.now()-lastTextChangedAt),1);
+    const next=await nextState(s.backendTabId,selectors,st,Math.min(waitMs,deadline-Date.now()));
+    if(!next){if(Date.now()>=deadline)throw Error(timeout);break;}
+    traced(next);
+    st=ready(next)?next:await waitFor(s.backendTabId,selectors,traced,deadline-Date.now(),timeout,{initial:next});
+    if(!ready(st))throw Error('没有识别到语音，请靠近麦克风再说一次。');
+    readySince=Date.now();
   }
   mark(s,'stable');
   const transcript=st.text;
@@ -259,7 +287,17 @@ async function finish(s,keyAt,reason){
   }catch(e){status=e.message;failed=true;await toast(s,status,true);}
   await Promise.all([publishStatus(failed?'error':'done',status,!failed,{fix:failed?'copy':undefined}),badge(failed?'COPY':'✓',failed?'#966000':'#176b55')]);
   reportTiming(s,failed?'error':'done',failed?status:undefined);
-  await Promise.all([page(s.backendTabId,'clear',transcript).catch(()=>{}),cleanup(s)]);
+  await Promise.all([(async()=>{
+    if(await page(s.backendTabId,'clear',transcript).catch(()=>false)){
+      await chrome.storage.session.remove('pendingDraftCleanup');
+    }else{
+      const remaining=await page(s.backendTabId,'state',selectors).catch(()=>null);
+      if(remaining?.text===transcript && remaining.documentId===st.documentId && remaining.userEdits===st.userEdits){
+        await chrome.storage.session.set({pendingDraftCleanup:{build:BUILD,backendTabId:s.backendTabId,
+          documentId:remaining.documentId,userEdits:remaining.userEdits,text:transcript,at:Date.now()}});
+      }
+    }
+  })(),cleanup(s)]);
 }
 // Reaching the recording limit finishes and transcribes instead of discarding.
 async function autoFinish(id){

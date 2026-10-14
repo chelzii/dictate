@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- 网页输入优先原生编辑命令，保留可验证的 Ctrl+Z 撤销与受阻插入保护。
+- 网页后备路径选择有权限的 iframe 叶文档，并检查焦点与文档导航。
+- 文本稳定计时复用已观察的等待，保留迟到更新保护。
+- 后台清理失败按文档和用户编辑状态重试，不按 lastResult 无条件清空草稿。
+
 - 分离 extension、native/dictate、scripts 与分层测试目录。
 - 拆分音量、剪贴板、面板管理、配置与目标焦点判断。
 - 增加 doctor/status/install/update/uninstall 命令。

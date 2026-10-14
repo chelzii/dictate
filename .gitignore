@@ -3,13 +3,23 @@ __pycache__/
 .venv/
 venv/
 node_modules/
-tests/.deps/
+tests/.deps
 .env
 .env.*
 *.zip
 *.wav
 *.mp3
 # Local desktop snapshots, transcripts and historical machine-specific tests.
-tests/real/*.json
-tests/real/*.png
-tests/real/legacy/
+tests/manual/real/*.json
+tests/manual/real/*.png
+tests/manual/real/legacy/
+dist/
+*.egg-info/
+# Local compatibility files for the previously loaded root extension only.
+/manifest.json
+/background.js
+/chatgpt-page.js
+/target.js
+/popup.html
+/popup.js
+/style.css

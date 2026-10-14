@@ -1,3 +1,5 @@
+// The root compatibility manifest exists only on previously installed machines.
+const ASSET_ROOT=chrome.runtime.getManifest().background.service_worker.startsWith('extension/')?'extension/':'';
 const SESSION_KEY='dictationSession';
 const WATCHDOG='dictation-watchdog';
 // A fresh id per service-worker lifetime; the page script re-injects itself when it differs.
@@ -36,7 +38,7 @@ async function badge(text,color='#176b55'){await Promise.all([chrome.action.setB
 function requestCancel(){cancelRequested=true;wakeCancel();}
 async function injectPage(tabId){
   await chrome.scripting.executeScript({target:{tabId},func:build=>{globalThis.__backgroundDictationBuild=build;},args:[BUILD]});
-  await chrome.scripting.executeScript({target:{tabId},files:['chatgpt-page.js']});
+  await chrome.scripting.executeScript({target:{tabId},files:[ASSET_ROOT+'content/chatgpt-page.js']});
 }
 async function page(tabId,method,...args){
   for(let attempt=0;;attempt++){
@@ -171,7 +173,7 @@ async function start(tab,desktopTarget,keyAt){
   if(backend.discarded || backend.frozen)throw Error('听写页已休眠，请手动打开一次恢复后重试。');
   const s={id:crypto.randomUUID(),backendTabId,phase:'starting',startedAt:Date.now(),t};
   if(desktopTarget){s.sink='desktop';s.desktopTarget=desktopTarget;}else{
-    const injected=await chrome.scripting.executeScript({target:{tabId:tab.id},files:['target.js']});
+    const injected=await chrome.scripting.executeScript({target:{tabId:tab.id},files:[ASSET_ROOT+'content/target.js']});
     s.targetTabId=tab.id;s.targetDocumentId=injected[0].documentId;
     if(!s.targetDocumentId)throw Error('无法取得目标文档标识。');
   }

@@ -15,10 +15,8 @@ import sys
 import time
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
-RUNTIME = Path(os.environ.get('XDG_RUNTIME_DIR') or f'/run/user/{os.getuid()}')
-SOCKET_PATH = Path(os.environ.get('DICTATION_SOCKET', str(RUNTIME / 'chatgpt-dictation.sock')))
-DAEMON = HERE / 'daemon'          # launcher written by install.py
+from .config import INSTALL, SOCKET_PATH
+DAEMON = INSTALL / 'daemon'
 MAX_MESSAGE = 1024 * 1024
 
 

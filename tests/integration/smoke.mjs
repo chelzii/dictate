@@ -1,18 +1,18 @@
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
-import {mkdtemp,readFile,writeFile,copyFile,rm,readdir} from 'node:fs/promises';
+import {mkdtemp,readFile,writeFile,copyFile,rm,readdir,cp} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {resolve,join} from 'node:path';
 import http from 'node:http';
-const root=resolve(new URL('..',import.meta.url).pathname);
+const root=resolve(new URL('../../extension/',import.meta.url).pathname);
 const temp=await mkdtemp(join(tmpdir(),'dictation-extension-test-'));
 const profile=join(temp,'profile');const extension=join(temp,'extension');
 const {mkdir}=await import('node:fs/promises');await mkdir(extension);
-for(const file of await readdir(root))if(/\.(js|json|html|css)$/.test(file))await copyFile(join(root,file),join(extension,file));
+await cp(root,extension,{recursive:true});
 const manifest=JSON.parse(await readFile(join(extension,'manifest.json'),'utf8'));
 manifest.host_permissions.push('http://127.0.0.1/*'); // Test harness only; release uses activeTab.
 await writeFile(join(extension,'manifest.json'),JSON.stringify(manifest));
-await writeFile(join(extension,'background.js'),await readFile(join(extension,'background.js'),'utf8')+'\nglobalThis.__testRun=run;\n');
+await writeFile(join(extension,'background/index.js'),await readFile(join(extension,'background/index.js'),'utf8')+'\nglobalThis.__testRun=run;\n');
 const mock=`<!doctype html><meta charset="utf-8"><form><div role="textbox" contenteditable="true" data-composer-markdown><p><br></p></div><button type="button" id="start" aria-label="听写"></button><button type="button" id="finish" aria-label="停止听写" hidden></button><button type="button" id="cancel" aria-label="取消听写" hidden></button><button type="button" id="transcribeSend" aria-label="转录并发送" hidden></button></form><button type="button" id="send" aria-label="Send prompt">Send</button><script>
 window.sent=0;window.recorded=0;window.lastTrusted=false;window.stream=null;
 const start=document.querySelector('#start'),finish=document.querySelector('#finish'),cancel=document.querySelector('#cancel');
@@ -35,7 +35,7 @@ async function tab(url){const t=await(await fetch(endpoint+'/json/new?'+encodeUR
 const backend=await tab('about:blank');
 backend.cdp.on('Fetch.requestPaused',p=>{backend.cdp.call('Fetch.fulfillRequest',{requestId:p.requestId,responseCode:200,responseHeaders:[{name:'Content-Type',value:'text/html; charset=utf-8'}],body:Buffer.from(mock).toString('base64')}).catch(()=>{});});
 await backend.cdp.call('Fetch.enable',{patterns:[{urlPattern:'https://chatgpt.com/*',resourceType:'Document'}]});await backend.cdp.call('Page.navigate',{url:'https://chatgpt.com/'});await pause(300);
-await tab('chrome-extension://'+extensionId+'/popup.html');
+await tab('chrome-extension://'+extensionId+'/popup/popup.html');
 let worker;for(let i=0;i<40;i++){const ts=(await browser.call('Target.getTargets')).targetInfos;const t=ts.find(t=>t.type==='service_worker' && t.url.includes(extensionId));if(t){worker=await connect('ws://127.0.0.1:'+port+'/devtools/page/'+t.targetId);break;}await pause(100);}assert(worker,'Extension service worker running');
 const backendId=await evaluate(worker,"(async()=>{const t=await chrome.tabs.query({url:'https://chatgpt.com/*'});await chrome.storage.session.set({backendTabId:t[0].id});return t[0].id;})()");
 const foreground=await tab('http://127.0.0.1:'+server.address().port+'/');await pause(200);await foreground.cdp.call('Page.bringToFront');

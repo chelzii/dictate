@@ -25,8 +25,8 @@ cd dictate
 sudo apt install python3-venv python3-gi gir1.2-gtk-3.0 xclip pipewire-bin
 ```
 
-1. Chrome 打开 `chrome://extensions`，开启开发者模式，选择“加载已解压的扩展程序”，加载 `dictate` 文件夹。
-2. 复制该扩展的 ID，执行 `python3 native/install.py YOUR_EXTENSION_ID`。这一步安装到当前用户，无需 sudo。
+1. Chrome 打开 `chrome://extensions`，开启开发者模式，选择“加载已解压的扩展程序”，加载 `dictate/extension` 文件夹。
+2. 复制该扩展的 ID，执行 `python3 scripts/dictate.py install --extension-id YOUR_EXTENSION_ID`。这一步安装到当前用户，无需 sudo。
 3. 重新加载扩展，打开扩展面板的专用 ChatGPT 页面，登录并手动尝试一次听写以授权麦克风。清空草稿并绑定专用页面。
 4. 点击目标输入框，按 F9 讲话，再按 F9 等待文字填入。F8 取消。
 
@@ -40,12 +40,17 @@ sudo apt install python3-venv python3-gi gir1.2-gtk-3.0 xclip pipewire-bin
 
 ## 开发与验证
 
+先按 [贡献说明](CONTRIBUTING.md) 准备开发依赖。
+
 ```bash
-node tests/smoke.mjs
-python3 -m compileall -q native tests
-python3 package.py
+python3 scripts/check.py
+python3 scripts/package.py
 ```
 
-快速测试使用临时无头 Chrome、模拟 ChatGPT 页面和虚拟录音设备，不能替代真实在线验收。既有真实测试的范围与结果见 [验收记录](VALIDATION.md)；重跑方法见 [测试说明](docs/TESTING.md)。打包输出为项目上一级的 `dictate.zip`，包含源码和使用文档，不包含测试数据。
+快速测试使用临时无头 Chrome、模拟 ChatGPT 页面和虚拟录音设备，不能替代真实在线验收。既有真实测试的范围与结果见 [验收记录](VALIDATION.md)；重跑方法见 [测试说明](docs/TESTING.md)。打包输出为 `dist/dictate-X.Y.Z.zip`，包含源码和使用文档，不包含测试数据。
 
 [架构与目录](docs/ARCHITECTURE.md) · [安装说明](docs/INSTALL.md) · [排障说明](docs/TROUBLESHOOTING.md) · [测试说明](docs/TESTING.md)
+
+## 开源与维护
+
+采用 [MIT 许可证](LICENSE)。问题与贡献流程见 [CONTRIBUTING.md](CONTRIBUTING.md)，后续工作见 [路线图](docs/ROADMAP.md)。内部版本用于发布追踪，悬浮窗不展示版本状态。

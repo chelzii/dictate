@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-for deps in [HERE.parent / '.deps', Path('/tmp/dictation-real-test-deps')]:
+for deps in [HERE.parents[1] / '.deps']:
     if deps.is_dir():
         sys.path.insert(0, str(deps))
 

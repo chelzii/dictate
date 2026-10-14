@@ -7,7 +7,6 @@ it through bridge.py, Chrome's native-messaging host, over a Unix socket. When F
 pressed and no extension is connected, the daemon starts Chrome in the background and
 replays the key once the extension connects.
 """
-import array
 import collections
 import hashlib
 import json
@@ -23,40 +22,15 @@ from pathlib import Path
 from Xlib import X, XK, display
 from Xlib.ext import xtest
 
-try:
-    import pulsectl
-except ImportError:  # The level meter is optional; dictation works without it.
-    pulsectl = None
-
-HERE = Path(__file__).resolve().parent
-RUNTIME = Path(os.environ.get('XDG_RUNTIME_DIR') or f'/run/user/{os.getuid()}')
-# Audio tools (pulsectl, pw-record) need it; a daemon started outside the session may lack it.
-os.environ.setdefault('XDG_RUNTIME_DIR', str(RUNTIME))
-SOCKET_PATH = Path(os.environ.get('DICTATION_SOCKET', str(RUNTIME / 'chatgpt-dictation.sock')))
-CACHE = Path(os.environ.get('XDG_CACHE_HOME', str(Path.home() / '.cache'))) / 'chatgpt-dictation'
-CONFIG = Path(os.environ.get('XDG_CONFIG_HOME', str(Path.home() / '.config'))) / 'chatgpt-dictation'
-# Chrome started for dictation opens no window. Without one Chrome would quit right away;
-# --keep-alive-for-test keeps it running in the background (it then also stays after the
-# last window is closed, which dictation needs). Tests point these at an isolated profile.
-CHROME_COMMAND = json.loads(os.environ.get('DICTATION_CHROME_COMMAND',
-                                           '["google-chrome", "--no-startup-window", "--keep-alive-for-test"]'))
-CHROME_PROFILE = os.environ.get('DICTATION_CHROME_PROFILE')
-
-KEYS = {'F9': 'toggle', 'F8': 'cancel'}
-LOCK_MASKS = [0, X.LockMask, X.Mod2Mask, X.LockMask | X.Mod2Mask]
-DEFAULT_SETTINGS = {'autoHide': False, 'sounds': False, 'autoStopOnPause': False, 'sleeping': False}
-SOUNDS = {'start': 'message-new-instant', 'done': 'complete', 'warning': 'dialog-warning', 'error': 'dialog-error'}
-ACTIVE_PHASES = {'starting', 'recording', 'transcribing', 'cancelling'}
-MAX_TEXT = 512 * 1024
-VOICE_LEVEL = 0.05        # peak level (0..1) treated as speech
-SILENCE_WARNING_S = 4     # no speech at all for this long -> "check the microphone"
-PAUSE_STOP_S = 3          # optional auto-finish after this much silence following speech
-LIMIT_WARNING_S = 60      # warn this long before the recording limit
-CHROME_LAUNCH_TIMEOUT_S = 45
-EXTENSION_CONNECT_TIMEOUT_S = 8
-HISTORY_SIZE = 10
-DEBUG = bool(os.environ.get('DICTATION_DEBUG'))
-
+from .config import (ACTIVE_PHASES, CACHE, CHROME_COMMAND, CHROME_PROFILE, CHROME_LAUNCH_TIMEOUT_S,
+                     CONFIG, DEBUG, DEFAULT_SETTINGS, EXTENSION_CONNECT_TIMEOUT_S, HISTORY_SIZE,
+                     LIMIT_WARNING_S, MAX_TEXT, PAUSE_STOP_S, SILENCE_WARNING_S, SOCKET_PATH,
+                     SOUNDS, VOICE_LEVEL)
+from .clipboard import get_clipboard, set_clipboard
+from .protocol import Lines
+from .panel import Panel
+from .audio import Meter
+from .hotkeys import KEYS, LOCK_MASKS, same_target
 
 def debug(*parts):
     if DEBUG:
@@ -91,171 +65,6 @@ def chrome_running():
         elif not dirs:
             return True
     return False
-
-
-def set_clipboard(text):
-    subprocess.run(['xclip', '-selection', 'clipboard', '-in'], input=text.encode(),
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2, check=True)
-
-
-def get_clipboard():
-    try:
-        return subprocess.run(['xclip', '-selection', 'clipboard', '-out'], capture_output=True,
-                              timeout=.5, check=True).stdout
-    except (subprocess.SubprocessError, FileNotFoundError):
-        return None
-
-
-class Lines:
-    """Newline-delimited JSON over a byte stream."""
-
-    def __init__(self):
-        self.buffer = b''
-
-    def feed(self, chunk):
-        self.buffer += chunk
-        *lines, self.buffer = self.buffer.split(b'\n')
-        out = []
-        for line in lines:
-            try:
-                out.append(json.loads(line))
-            except ValueError:
-                pass
-        return out
-
-
-class Panel:
-    """The GTK status panel (overlay.py), a child process fed JSON lines."""
-
-    def __init__(self):
-        self.proc = None
-        self.lines = Lines()
-
-    def alive(self):
-        return self.proc is not None and self.proc.poll() is None
-
-    def send(self, message):
-        line = (json.dumps(message, ensure_ascii=False) + '\n').encode()
-        # Respawn once if the panel exited.
-        for _ in range(2):
-            if not self.alive():
-                self.close()
-                self.proc = subprocess.Popen(
-                    ['/usr/bin/python3', str(HERE / 'overlay.py')], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                    stderr=(CACHE / 'hud-errors.log').open('a'))
-                self.lines = Lines()
-                self.on_spawn()
-            try:
-                self.proc.stdin.write(line)
-                self.proc.stdin.flush()
-                return True
-            except OSError:
-                self.close()
-        return False
-
-    def on_spawn(self):
-        """Replaced by the daemon to replay menu state into a fresh panel."""
-
-    def fileno(self):
-        return self.proc.stdout.fileno() if self.alive() else None
-
-    def read(self):
-        chunk = os.read(self.proc.stdout.fileno(), 65536)
-        if not chunk:
-            self.close()
-            return []
-        return self.lines.feed(chunk)
-
-    def close(self):
-        proc, self.proc = self.proc, None
-        if proc is None:
-            return
-        try:
-            proc.stdin.close()
-            proc.wait(timeout=1)
-        except (OSError, subprocess.TimeoutExpired):
-            proc.terminate()
-        proc.stdout.close()
-
-
-class Meter:
-    """Peak level of the microphone Chrome records from, via a parallel pw-record stream.
-
-    Audio is only reduced to a peak value per chunk; nothing is stored.
-    """
-
-    def __init__(self):
-        self.proc = None
-        self.source = None
-        self.pulse = None
-        self.rest = b''
-
-    def refresh(self):
-        source = self._chrome_source()
-        if source != self.source:
-            self._kill()
-            self.source = source
-            if source:
-                self._start(source)
-
-    def _chrome_source(self):
-        if pulsectl is None:
-            return None
-        try:
-            if self.pulse is None:
-                self.pulse = pulsectl.Pulse('chatgpt-dictation-meter')
-            streams = [s for s in self.pulse.source_output_list()
-                       if 'chrome' in s.proplist.get('application.name', '').lower()]
-            return self.pulse.source_info(streams[-1].source).name if streams else None
-        except Exception:
-            self._close_pulse()
-            return None
-
-    def _start(self, source):
-        args = ['pw-record', '--rate', '8000', '--channels', '1', '--format', 's16', '--latency', '50ms']
-        if source.endswith('.monitor'):
-            args += ['--target', source[:-len('.monitor')], '-P', '{ stream.capture.sink=true }']
-        else:
-            args += ['--target', source]
-        try:
-            self.proc = subprocess.Popen(args + ['-'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        except FileNotFoundError:
-            self.proc = None
-        self.rest = b''
-
-    def fileno(self):
-        return self.proc.stdout.fileno() if self.proc else None
-
-    def read(self):
-        chunk = os.read(self.proc.stdout.fileno(), 8192)
-        if not chunk:
-            self._kill()
-            return None
-        data = self.rest + chunk
-        even = len(data) // 2 * 2
-        self.rest = data[even:]
-        samples = array.array('h', data[:even])
-        return max(map(abs, samples)) / 32768 if samples else None
-
-    def _kill(self):
-        if self.proc:
-            self.proc.kill()
-            self.proc.wait()
-            self.proc.stdout.close()
-        self.proc = None
-
-    def _close_pulse(self):
-        if self.pulse:
-            try:
-                self.pulse.close()
-            except Exception:
-                pass
-        self.pulse = None
-
-    def stop(self):
-        self._kill()
-        self._close_pulse()
-        self.source = None
 
 
 class Daemon:
@@ -360,13 +169,7 @@ class Daemon:
         child = self.d.get_input_focus().focus
         return {'window': window, 'focus': int(child.id) if hasattr(child, 'id') else int(child)}
 
-    @staticmethod
-    def same_target(now, target):
-        # Toolkits move focus between a top-level window and its own focus child right after
-        # activation; only a different top-level window or a different child counts as a change.
-        if not isinstance(target, dict) or now['window'] != target.get('window'):
-            return False
-        return now['focus'] == target.get('focus') or now['window'] in (now['focus'], target.get('focus'))
+    same_target = staticmethod(same_target)
 
     def key_down(self, code):
         keymap = self.d.query_keymap()
